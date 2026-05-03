@@ -502,25 +502,33 @@ async function parseXlsx(file) {
 async function parseCsv(file) {
   const text = await file.text();
   const obj = {};
-  text.split('\n').forEach(line => {
+  // Handle both \r\n and \n line endings
+  const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  for (const line of lines) {
+    // Split on first tab only
     const sep = line.indexOf('\t');
-    if (sep === -1) return;
+    if (sep === -1) continue;
     const key = line.slice(0, sep).trim();
-    const val = line.slice(sep + 1).trim().replace(/^"|"$/g,'');
-    obj[key] = val;
-  });
+    // Strip surrounding quotes if present (handles quoted multi-word values)
+    let val = line.slice(sep + 1).trim();
+    if (val.startsWith('"') && val.endsWith('"')) val = val.slice(1, -1);
+    if (key) obj[key] = val;
+  }
   return obj;
 }
 
 // ── Giladi total score from CSV ────────────────────────────────────────────
-// Sum all Giladi XXX Total fields for a given state (OFF or ON)
+// Sum all "Giladi {STATE} * Total" fields. Also log keys for debugging.
 function computeGiladiTotal(csv, state) {
-  const prefix = `Giladi ${state} `;
+  // The sub-task names vary; match any key: "Giladi OFF ??? Total" or "Giladi ON ??? Total"
+  // Use case-insensitive prefix+suffix matching
+  const prefixLower = `giladi ${state.toLowerCase()} `;
   let total = 0; let count = 0;
   for (const [k, v] of Object.entries(csv)) {
-    if (k.startsWith(prefix) && k.endsWith(' Total')) {
+    const kl = k.toLowerCase();
+    if (kl.startsWith(prefixLower) && kl.endsWith(' total')) {
       const n = parseFloat(v);
-      if (!isNaN(n)) { total += n; count++; }
+      if (!isNaN(n) && n > 0) { total += n; count++; }
     }
   }
   return count > 0 ? total : null;
@@ -592,7 +600,12 @@ async function runAnalysis() {
       if (!rows) { log(`⚠ ${pid} ${state}: no xlsx file`, 'warn'); continue; }
 
       const giladiTotal = computeGiladiTotal(data.csv, state);
-      if (giladiTotal === null) { log(`⚠ ${pid} ${state}: Giladi totals not found in CSV`, 'warn'); continue; }
+      if (giladiTotal === null) {
+        // Show which keys were found for debugging
+        const giladiKeys = Object.keys(data.csv).filter(k => k.toLowerCase().includes('giladi'));
+        log(`⚠ ${pid} ${state}: Giladi totals not found. CSV Giladi keys (${giladiKeys.length}): ${giladiKeys.slice(0,5).join(', ')}${giladiKeys.length>5?'…':''}`, 'warn');
+        continue;
+      }
 
       for (const bl of ['sitting', 'standing']) {
         const row = getHRVRow(rows, state, bl);
