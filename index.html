@@ -392,8 +392,50 @@
 </div>
 
 <script>
+// ── CSV parser: mirrors Python's csv.reader exactly ────────────────────────
+// Handles RFC-4180 quoted fields with embedded commas, quotes, newlines.
+function parseCSVtoKV(text) {
+  // Normalise line endings
+  text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const result = {};
+  let i = 0;
+
+  function readField() {
+    if (i >= text.length) return '';
+    if (text[i] === '"') {
+      i++; // skip opening quote
+      let val = '';
+      while (i < text.length) {
+        if (text[i] === '"') {
+          i++;
+          if (text[i] === '"') { val += '"'; i++; } // escaped ""
+          else break; // closing quote
+        } else {
+          val += text[i++];
+        }
+      }
+      return val;
+    } else {
+      let val = '';
+      while (i < text.length && text[i] !== ',' && text[i] !== '\n') {
+        val += text[i++];
+      }
+      return val.trim();
+    }
+  }
+
+  while (i < text.length) {
+    const key = readField();
+    if (i < text.length && text[i] === ',') i++; // skip comma between fields
+    const val = readField();
+    if (i < text.length && text[i] === '\n') i++; // skip newline
+    if (key && key !== 'Field') result[key] = val;
+  }
+  return result;
+}
+
 // ── State ──────────────────────────────────────────────────────────────────
-const xlsxFiles = new Map(); // filename → File
+const xlsxFiles = new Map();
 const csvFiles  = new Map();
 let baseline = 'sitting';
 let stateFilter = 'both';
@@ -501,64 +543,21 @@ async function parseXlsx(file) {
 
 async function parseCsv(file) {
   const text = await file.text();
-  const obj = {};
-  const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
-
-  for (const line of lines) {
-    if (!line.trim()) continue;
-
-    let key = '', val = '';
-
-    if (line.startsWith('"')) {
-      // Proper quoted CSV parser: scan char by char
-      let i = 1, field = '';
-      // Read key
-      while (i < line.length) {
-        if (line[i] === '"') {
-          if (line[i+1] === '"') { field += '"'; i += 2; } // escaped quote
-          else { i++; break; } // end of field
-        } else { field += line[i++]; }
-      }
-      key = field;
-      // Skip comma separator
-      if (line[i] === ',') i++;
-      // Read value
-      field = '';
-      if (line[i] === '"') {
-        i++;
-        while (i < line.length) {
-          if (line[i] === '"') {
-            if (line[i+1] === '"') { field += '"'; i += 2; }
-            else { i++; break; }
-          } else { field += line[i++]; }
-        }
-      } else {
-        field = line.slice(i);
-      }
-      val = field;
-    } else if (line.includes('\t')) {
-      const idx = line.indexOf('\t');
-      key = line.slice(0, idx).trim();
-      val = line.slice(idx + 1).trim().replace(/^"|"$/g, '');
-    } else {
-      const idx = line.indexOf(',');
-      if (idx === -1) continue;
-      key = line.slice(0, idx).trim();
-      val = line.slice(idx + 1).trim().replace(/^"|"$/g, '');
-    }
-
-    if (key && key !== 'Field') obj[key] = val;
-  }
+  const obj = parseCSVtoKV(text);
+  // Debug: confirm giladi keys found
+  const gk = Object.keys(obj).filter(k => k.toLowerCase().includes('giladi') && k.toLowerCase().endsWith('total'));
+  log(`  CSV "${file.name}": ${Object.keys(obj).length} keys, ${gk.length} Giladi Total fields`, gk.length ? 'ok' : 'warn');
   return obj;
 }
 
-// ── Giladi total score from CSV ────────────────────────────────────────────
+// ── Giladi total score ─────────────────────────────────────────────────────
 function computeGiladiTotal(csv, state) {
-  const prefixLower = `giladi ${state.toLowerCase()} `;
-  let total = 0; let count = 0;
+  // Match: "Giladi OFF Walk Total", "Giladi ON Box Agility Total", etc.
+  const pre = `giladi ${state.toLowerCase()} `;
+  let total = 0, count = 0;
   for (const [k, v] of Object.entries(csv)) {
     const kl = k.toLowerCase();
-    if (kl.startsWith(prefixLower) && kl.endsWith(' total')) {
+    if (kl.startsWith(pre) && kl.endsWith(' total')) {
       const n = parseFloat(v);
       if (!isNaN(n)) { total += n; count++; }
     }
