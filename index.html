@@ -506,16 +506,36 @@ async function parseCsv(file) {
 
   for (const line of lines) {
     if (!line.trim()) continue;
-    // Handle both "Key","Value" (quoted CSV) and Key\tValue (tab) and Key,Value (unquoted)
-    let key, val;
+
+    let key = '', val = '';
+
     if (line.startsWith('"')) {
-      // Quoted CSV: "Field","Value"  — split on first ","
-      // Find closing quote of key
-      const keyEnd = line.indexOf('"', 1);
-      key = line.slice(1, keyEnd);
-      // Value is everything after the comma, strip outer quotes
-      const rest = line.slice(keyEnd + 1).replace(/^,/, '').trim();
-      val = rest.replace(/^"|"$/g, '');
+      // Proper quoted CSV parser: scan char by char
+      let i = 1, field = '';
+      // Read key
+      while (i < line.length) {
+        if (line[i] === '"') {
+          if (line[i+1] === '"') { field += '"'; i += 2; } // escaped quote
+          else { i++; break; } // end of field
+        } else { field += line[i++]; }
+      }
+      key = field;
+      // Skip comma separator
+      if (line[i] === ',') i++;
+      // Read value
+      field = '';
+      if (line[i] === '"') {
+        i++;
+        while (i < line.length) {
+          if (line[i] === '"') {
+            if (line[i+1] === '"') { field += '"'; i += 2; }
+            else { i++; break; }
+          } else { field += line[i++]; }
+        }
+      } else {
+        field = line.slice(i);
+      }
+      val = field;
     } else if (line.includes('\t')) {
       const idx = line.indexOf('\t');
       key = line.slice(0, idx).trim();
@@ -526,13 +546,13 @@ async function parseCsv(file) {
       key = line.slice(0, idx).trim();
       val = line.slice(idx + 1).trim().replace(/^"|"$/g, '');
     }
+
     if (key && key !== 'Field') obj[key] = val;
   }
   return obj;
 }
 
 // ── Giladi total score from CSV ────────────────────────────────────────────
-// Sum all "Giladi {STATE} * Total" fields (include zeros — zero is a valid score)
 function computeGiladiTotal(csv, state) {
   const prefixLower = `giladi ${state.toLowerCase()} `;
   let total = 0; let count = 0;
