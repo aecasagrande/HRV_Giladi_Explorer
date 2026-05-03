@@ -502,33 +502,45 @@ async function parseXlsx(file) {
 async function parseCsv(file) {
   const text = await file.text();
   const obj = {};
-  // Handle both \r\n and \n line endings
   const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+
   for (const line of lines) {
-    // Split on first tab only
-    const sep = line.indexOf('\t');
-    if (sep === -1) continue;
-    const key = line.slice(0, sep).trim();
-    // Strip surrounding quotes if present (handles quoted multi-word values)
-    let val = line.slice(sep + 1).trim();
-    if (val.startsWith('"') && val.endsWith('"')) val = val.slice(1, -1);
-    if (key) obj[key] = val;
+    if (!line.trim()) continue;
+    // Handle both "Key","Value" (quoted CSV) and Key\tValue (tab) and Key,Value (unquoted)
+    let key, val;
+    if (line.startsWith('"')) {
+      // Quoted CSV: "Field","Value"  — split on first ","
+      // Find closing quote of key
+      const keyEnd = line.indexOf('"', 1);
+      key = line.slice(1, keyEnd);
+      // Value is everything after the comma, strip outer quotes
+      const rest = line.slice(keyEnd + 1).replace(/^,/, '').trim();
+      val = rest.replace(/^"|"$/g, '');
+    } else if (line.includes('\t')) {
+      const idx = line.indexOf('\t');
+      key = line.slice(0, idx).trim();
+      val = line.slice(idx + 1).trim().replace(/^"|"$/g, '');
+    } else {
+      const idx = line.indexOf(',');
+      if (idx === -1) continue;
+      key = line.slice(0, idx).trim();
+      val = line.slice(idx + 1).trim().replace(/^"|"$/g, '');
+    }
+    if (key && key !== 'Field') obj[key] = val;
   }
   return obj;
 }
 
 // ── Giladi total score from CSV ────────────────────────────────────────────
-// Sum all "Giladi {STATE} * Total" fields. Also log keys for debugging.
+// Sum all "Giladi {STATE} * Total" fields (include zeros — zero is a valid score)
 function computeGiladiTotal(csv, state) {
-  // The sub-task names vary; match any key: "Giladi OFF ??? Total" or "Giladi ON ??? Total"
-  // Use case-insensitive prefix+suffix matching
   const prefixLower = `giladi ${state.toLowerCase()} `;
   let total = 0; let count = 0;
   for (const [k, v] of Object.entries(csv)) {
     const kl = k.toLowerCase();
     if (kl.startsWith(prefixLower) && kl.endsWith(' total')) {
       const n = parseFloat(v);
-      if (!isNaN(n) && n > 0) { total += n; count++; }
+      if (!isNaN(n)) { total += n; count++; }
     }
   }
   return count > 0 ? total : null;
@@ -601,9 +613,8 @@ async function runAnalysis() {
 
       const giladiTotal = computeGiladiTotal(data.csv, state);
       if (giladiTotal === null) {
-        // Show which keys were found for debugging
         const giladiKeys = Object.keys(data.csv).filter(k => k.toLowerCase().includes('giladi'));
-        log(`⚠ ${pid} ${state}: Giladi totals not found. CSV Giladi keys (${giladiKeys.length}): ${giladiKeys.slice(0,5).join(', ')}${giladiKeys.length>5?'…':''}`, 'warn');
+        log(`⚠ ${pid} ${state}: no Giladi Total fields found (${giladiKeys.length} giladi keys total)`, 'warn');
         continue;
       }
 
